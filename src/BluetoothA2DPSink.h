@@ -284,6 +284,12 @@ class BluetoothA2DPSink : public BluetoothA2DPCommon {
     virtual void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param);
     // avrc callback
     virtual void app_rc_ct_callback(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t *param);
+    // get volumeFactor
+    virtual int32_t get_volumeFactor(uint8_t volume);
+    // Callback for music stream (16bit)
+    virtual void audio_data_callback16(const uint8_t *data, uint32_t len);
+    // Callback for music stream (24/32bit)
+    virtual void audio_data_callback32(const uint8_t *data, uint32_t len);
     // Callback for music stream 
     virtual void audio_data_callback(const uint8_t *data, uint32_t len);
     // av event handler

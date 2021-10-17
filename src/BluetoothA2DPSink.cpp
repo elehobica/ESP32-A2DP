@@ -934,18 +934,26 @@ long map(long x, long in_min, long in_max, long out_min, long out_max) {
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
+int32_t BluetoothA2DPSink::get_volumeFactor(uint8_t volume) {
+    constexpr double base = 1.4;
+    constexpr double bits = 12;
+    constexpr double zero_ofs = pow(base, -bits);
+    constexpr double scale = pow(2.0, bits);
+    double volumeFactorFloat = s_volume;
+    volumeFactorFloat = (pow(base, s_volume * bits / 127.0 - bits) - zero_ofs) * scale / (1.0 - zero_ofs);
+    int32_t volumeFactor = volumeFactorFloat;
+    if (volumeFactor > 0x1000) {
+        volumeFactor = 0x1000;
+    }
+    return volumeFactor;
+}
 
-void BluetoothA2DPSink::audio_data_callback(const uint8_t *data, uint32_t len) {
+void BluetoothA2DPSink::audio_data_callback16(const uint8_t *data, uint32_t len) {
     ESP_LOGD(BT_AV_TAG, "%s", __func__);
 
     if (mono_downmix || is_volume_used) {
         ESP_LOGD(BT_AV_TAG, "volume/channels");
-        double volumeFactorFloat = s_volume;
-        volumeFactorFloat = pow(2.0, volumeFactorFloat * 12.0 / 127.0);
-        int32_t volumeFactor = volumeFactorFloat - 1.0;
-        if (volumeFactor > 0xfff) {
-            volumeFactor = 0xfff;
-        }
+        int32_t volumeFactor = get_volumeFactor(s_volume);
         uint8_t* corr_data = (uint8_t*) data;
         for (int i=0; i<len/4; i++) {
             int16_t pcmLeft = ((uint16_t)data[i*4 + 1] << 8) | data[i*4];
@@ -955,8 +963,8 @@ void BluetoothA2DPSink::audio_data_callback(const uint8_t *data, uint32_t len) {
             }
 
             if (is_volume_used) {
-                pcmLeft = (int32_t)pcmLeft * volumeFactor / 0xfff; 
-                pcmRight = (int32_t)pcmRight * volumeFactor / 0xfff; 
+                pcmLeft = (int32_t)pcmLeft * volumeFactor / 0x1000;
+                pcmRight = (int32_t)pcmRight * volumeFactor / 0x1000;
             }
             corr_data[i*4+1] = pcmLeft >> 8;
             corr_data[i*4] = pcmLeft;
@@ -1024,6 +1032,68 @@ void BluetoothA2DPSink::audio_data_callback(const uint8_t *data, uint32_t len) {
     if (data_received!=nullptr){
         ESP_LOGD(BT_AV_TAG, "data_received");
            (*data_received)();
+    }
+}
+
+void BluetoothA2DPSink::audio_data_callback32(const uint8_t *data, uint32_t len) {
+    ESP_LOGD(BT_AV_TAG, "%s", __func__);
+    static constexpr int blk_size = 128;
+    static uint32_t data32[blk_size/2];
+    uint32_t rest_len = len;
+
+    while (rest_len>0) {
+        uint32_t blk_len = (rest_len>=blk_size) ? blk_size : rest_len;
+        if (mono_downmix || is_volume_used) {
+            int32_t volumeFactor = get_volumeFactor(s_volume);
+            for (int i=0; i<blk_len/4; i++) {
+                int32_t pcmLeft = (int16_t) (((uint16_t)data[1] << 8) | ((uint16_t) data[0]));
+                int32_t pcmRight = (int16_t) (((uint16_t)data[3] << 8) | ((uint16_t) data[2]));
+                data += 4;
+                if (mono_downmix) {
+                    pcmRight = pcmLeft = ((int32_t)pcmLeft + pcmRight) >> 1;
+                }
+
+                if (is_volume_used) {
+                    pcmLeft = pcmLeft * volumeFactor * 16;
+                    pcmRight = pcmRight * volumeFactor * 16;
+                } else {
+                    pcmLeft = pcmLeft * 0x1000 * 16;
+                    pcmRight = pcmRight * 0x1000 * 16;
+                }
+                data32[i*2+0] = pcmLeft;
+                data32[i*2+1] = pcmRight;
+            }
+        }
+
+        if (stream_reader!=nullptr){
+            ESP_LOGD(BT_AV_TAG, "stream_reader");
+            (*stream_reader)((uint8_t *)data32, blk_len*2);
+        }
+
+        if (is_i2s_output) {
+            size_t i2s_bytes_written;
+            if (i2s_write(i2s_port,(void*) data32, blk_len*2, &i2s_bytes_written, portMAX_DELAY)!=ESP_OK){
+                ESP_LOGE(BT_AV_TAG, "i2s_write has failed");
+            }
+
+            if (i2s_bytes_written<blk_len*2){
+                ESP_LOGE(BT_AV_TAG, "Timeout: not all bytes were written to I2S");
+            }
+        }
+
+        if (data_received!=nullptr){
+            ESP_LOGD(BT_AV_TAG, "data_received");
+            (*data_received)();
+        }
+        rest_len -= blk_len;
+    }
+}
+
+void BluetoothA2DPSink::audio_data_callback(const uint8_t *data, uint32_t len) {
+    if (i2s_config.bits_per_sample>16){
+        audio_data_callback32(data, len);
+    } else {
+        audio_data_callback16(data, len);
     }
 }
 
